@@ -1,0 +1,63 @@
+#!/bin/bash
+set -e
+
+DEL_SCRIPT=~/.scripts/odosdown
+
+INSTANCE_ID=$(aws ec2 describe-instances --filter Name=tag:Name,Values=Central-ODIS \
+  | grep InstanceId \
+  | cut -d '"' -f4 \
+)
+echo "creating shutdown script: $DEL_SCRIPT"
+rm -f $DEL_SCRIPT
+cat > $DEL_SCRIPT << EOF
+#!/bin/bash
+echo "stopping CORE_VM_DOCKER_HOSTCONFIG_NETWORKMODE server"
+
+aws ec2 stop-instances --instance-ids $INSTANCE_ID
+EOF
+
+chmod +x $DEL_SCRIPT
+
+aws ec2 start-instances --instance-ids $INSTANCE_ID
+aws ec2 wait instance-running --instance-ids $INSTANCE_ID
+
+IP=$(aws ec2 describe-instances --filter Name=tag:Name,Values=Central-ODIS \
+  | grep PublicIpAddress \
+  | cut -d '"' -f4 \
+)
+echo "Public IP: $IP"
+
+CB=$(mktemp)
+
+cat > $CB << EOF
+
+{
+    "Comment": "new wiki spinup",
+    "Changes": [
+    {
+        "Action": "UPSERT",
+        "ResourceRecordSet": {
+          "Name": "odos.lassiterdynamics.com.",
+          "Type": "A",
+          "TTL": 300,
+          "ResourceRecords": [
+              { "Value": "$IP" }
+          ]
+        }
+    }
+    ]
+}
+EOF
+
+echo "setting DNS to new IP"
+CHANGE_ID=$( aws route53 change-resource-record-sets --hosted-zone-id=Z1O1NSEWTJYVGK --change-batch=file://$CB  \
+  | grep Id \
+  | cut -d '"' -f4 \
+)
+rm -f $CB
+``
+aws route53 wait resource-record-sets-changed --id $CHANGE_ID
+
+echo "odos.lassiterdynamics.com machine spun up"
+
+echo $CB
